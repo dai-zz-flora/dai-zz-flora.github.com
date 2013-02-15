@@ -1,0 +1,105 @@
+Tri-color marking 三色标记垃圾回收算法
+======================================
+
+1.算法
+--------
+
+1.1 描述
+`````````````
+
+* 三个集合:白色、灰色、黑色 
+  白色集合包含需要被回收的对象，初始化时包含申请进行垃圾回收的对象
+  黑色集合存放所有已经被证实没有被白色集合中对象所引用的对象，初始化为空
+  灰色集合存放所有能从root到达的,且未对其引用子对象进行扫描的对象，所有grey对象最后都会变成balck对象，垃圾回收开始时包含root直接引用的对象
+* 扫描grey集合中所有对象,将其转移到black集合中,并将其直接引用的子对象从white集合中移动到grey集合中。
+* 重复上述步骤直到grey集合为空
+* 如果white集合不为空，则认为这些对象是可回收的垃圾对象
+
+1.2 伪代码
+`````````````
+
+.. code-block:: ruby
+    :linenos:
+
+    Set black,grey,black,roots;
+    black = {};
+    grey = referenced(roots);
+    white = {all};
+    while ( grey is not empty ) {
+        object in grey;
+        move(object,black);
+        move(referenced(object),grey);
+    }
+
+    Set unreachable = white;
+
+
+1.3 注释
+`````````````
+* 所有该算法的变化都有一个共同点：黑色集合中对象不直接引用白色集合中的对象
+
+    
+2.各种实现
+-----------
+
+2.1 mark and sweep
+`````````````````````
+这种回收机制会在每个对象中保留一个bit为来标示该对象属于white集合或者black集合,而grey集合则单独用一个list来维护。在遍历整个对象引用树时，这个bit标记了对象的状态。这种策略的好处是不占用太多内存
+
+
+.. code-block:: c
+    :linenos:
+
+    int black = 0,white = 1;
+    /*mark phase*/
+    List grey_set = referenced(roots);
+    while ( grey_set is not empty ) {
+        Object o = grey_set.get();
+        mark(o,black);
+        mark(referenced(object),grey);
+    }
+
+    /*sweep*/
+    for(Object o in object_list) {
+        if(o is white){
+            sweep(o);
+        }        
+    }
+
+
+2.2 mark and don't sweep
+````````````````````````````````
+
+这种机制与mark and sweep存在两个最大的不同点 :
+
+
+* **black和white的定义在这里有所不同** 在分配一个新对象时，该对象即为balck，即使之后它处于unreachable状态。当对象处于white状态时，表示该对象已然无用，其空间可以被重新分配
+
+* **black和white的属性值可以变化** 例如初始(black =0 white =1)，当分配内存时发现无white对象可用(无空闲内存)，也就是所有对像都是black状态，此时设置(black=1,white=0)，所有对象变成white状态。遍历对象进行mark操作，该操作完成后，只有unreachable的对象为white，没有sweep操作
+
+.. code-block:: c
+    :linenos:
+
+    int black = 0,white = 1;
+    Object new = NULL;
+    /*mark phase*/
+    if(no white object)/*no memory*/{
+        List grey_set = referenced(roots);
+        black = !black;
+        white = !white;
+        while ( grey_set is not empty ) {
+            Object o = grey_set.get();
+            mark(o,black);
+            mark(referenced(o),grey);
+        }
+
+        /*unreachable/unused = white object;*/
+        new = find_one_white();
+        mark(new,black);
+    }
+    else{
+        /*allocated white object to new one*/
+        new = find_one_white();
+        mark(new,black);
+    }
+    /*no sweep phase*/    
