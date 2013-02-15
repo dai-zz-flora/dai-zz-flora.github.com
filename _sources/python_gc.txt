@@ -1,5 +1,17 @@
+.. -*- coding: utf-8 -*-
+
+=========================
 Python的垃圾回收机制
 =========================
+
+:作者: dai.zz.flora@gmail.com
+
+.. Note::
+
+   本文的目的是对Python的垃圾回收机制做一个全景式的描述。
+   宗旨是一、对读者阅读Python源码起一个指导作用。二、尽量从细节中脱离出来，抽象其大体骨架。
+   关于Python垃圾回收的一些原始构思见 [#f1]_
+
 
 1.关键技术
 ------------------------
@@ -14,10 +26,8 @@ Python包含一个比较轻量级的垃圾回收器，其主要代码分布gcmod
   操作由开发人员完成。
 
 
- 
 
-
-* **标记清除**
+* **标记清除(mark and sweep)**
 
   大多数情况下，引用计数可以很好地工作，但考虑到可能存在下面这种代码，造成循环引用
 
@@ -37,8 +47,7 @@ Python包含一个比较轻量级的垃圾回收器，其主要代码分布gcmod
 
 * **分代垃圾回收**
 
-  分代垃圾回收是现代垃圾回收器的基本特性，主要思路是存活越久的对象，越少对其进行垃圾回收扫描，以便提高性能。而在Python中，
-  每代对象有一个数量阀值，超过该阀值则进行垃圾回收。
+  分代垃圾回收是现代垃圾回收器的基本特性，主要思路是存活越久的对象，越少对其进行垃圾回收扫描，以便提高性能。
 
 
 * **对象链表**
@@ -89,20 +98,20 @@ Python包含一个比较轻量级的垃圾回收器，其主要代码分布gcmod
    :linenos:
 
   在上面的代码中 `gc_generation` 为分代的数据结构，其内容包含阀值( `threshold` ）和被回收的次数 ( `count` )。随后的全局初始化代码会自动
-  生成一个不跟随对象空间的 `PyGC_Head` 结构，其prev和next（通过调用 `GEN_HEAD` 宏）都指向自己，由此之后的插入都会使得该  链表成一个环状，
+  生成一个不跟随对象空间的 `PyGC_Head` 结构，其prev和next（通过调用 `GEN_HEAD` 宏）都指向自己，由此之后的插入都会使得该链表成一个环状，
   在今后的遍历中，以该头为开始，且以该头为结束。
 
 
 
-3.流程
+3.基本流程
 ------------------------
 
 
-3.1 对象创建
+3.1 对象创建 
 ```````````````````
-* **说明** : 在Python中，根据不同的情况有不同的函数来完成对象的创建工作，但大体流程均相似
+* **说明** : 在Python中，根据不同的情况有不同的函数来完成对象的创建工作，但大体流程均相似。[#f2]_ 
 
-* **输入** ：type:对象相应 `PyTypeObject` 类信息、nitems:容器大小（如果是容器对象的话）、args:初始化参数(`PyObject *args, PyObject *kwds`)
+* **输入** ：type:对象相应 `PyTypeObject` [#f3]_ 类信息、nitems:容器大小（如果是容器对象的话）、args:初始化参数(`PyObject *args, PyObject *kwds`)
 
 * **输出** : `PyObject` 对象指针 
 
@@ -153,7 +162,7 @@ Python包含一个比较轻量级的垃圾回收器，其主要代码分布gcmod
 3.2 对象销毁
 ``````````````````
 
-* **说明** : 在Python中，根据不同的情况有不同的函数来完成对象的销毁工作，但大体流程均相似
+* **说明** : 在Python中，根据不同的情况有不同的函数来完成对象的销毁工作，但大体流程均相似。[#f2]_ 
 
 * **输入** ：type:对象相应 `PyTypeObject` 类信息、obj:对象指针
 
@@ -188,7 +197,7 @@ Python包含一个比较轻量级的垃圾回收器，其主要代码分布gcmod
 
 3.3 根据引用计数销毁
 ```````````````````````
-* **说明** :对象在引用结束时显式调用Py_DECREF,Py_CLEAR等函数，当引用数为0时，会直接释放该对象(_Py_Dealloc)
+* **说明** :对象在引用开始时调用Py_INCREF等函数，结束时显式调用Py_DECREF,Py_CLEAR等函数，当引用数为0时，会直接释放该对象(_Py_Dealloc) [#f4]_
 
 * **输入** ：type:对象相应 `PyTypeObject` 类信息、obj:对象指针
 
@@ -221,7 +230,7 @@ Python包含一个比较轻量级的垃圾回收器，其主要代码分布gcmod
 
 * **方法** ：
 
- - 1.遍历所有代
+ - 1.从最老的代开始倒序遍历所有代
  - 2.判断本代对象数量是否超过阀值，如果超过则进行下列回收操作
  - 3.合并本代所有比本代更年轻的代，
  - 4.找到根节点
@@ -234,9 +243,54 @@ Python包含一个比较轻量级的垃圾回收器，其主要代码分布gcmod
   .. code-block:: c
      :linenos:
 
-     if(obj->obj_refcnt--!=0){
-        type->dealloc(obj);
+     static Py_ssize_t
+     collect_generations(void)
+     {
+        int i;
+        /* 1.Find the oldest generation (highest numbered) where the count
+         * exceeds the threshold.  
+         * 2. Objects in the that generation and
+         * generations younger than it will be collected.*/
+         
+         for (i = NUM_GENERATIONS-1; i >= 0; i--) {
+             if (generations[i].count > generations[i].threshold) {
+                 n = collect(i);
+                 break;
+            }
+         }
      }
+
+     static Py_ssize_t
+     collect(int generation)
+     {
+         int i;
+         PyGC_Head *young; /* the generation we are examining */
+         PyGC_Head *old; /* next older generation */
+         PyGC_Head *unreachable; /* non-problematic unreachable trash */
+
+         /*3.merge younger generations with one we are currently collecting*/
+         for (i = 0; i < generation; i++) {
+             gc_list_merge(GEN_HEAD(i), GEN_HEAD(generation));
+         }
+
+         young = GEN_HEAD(generation);
+         old = GEN_HEAD(generation<NUM_GENERATIONS-1?generation+1:generation);
+
+         /*4.find roots*/
+         find_and_mark_roots(young)
+
+         /*5.mark and move unreachable,rest object in young is reachable*/
+         move_unreachable(young, unreachable);
+        
+         /*6.merge young to old*/
+         gc_list_merge(young, old);
+         
+         
+         /*7.delete garbage*/
+         delete_garbage(unreachable);
+     }
+
+
 
 4 细节注释
 -----------------------
@@ -244,30 +298,113 @@ Python包含一个比较轻量级的垃圾回收器，其主要代码分布gcmod
 
 4.1 如何找到根对象
 `````````````````````
-从对象拷贝ref count
-update_refs(young);
-访问该代的每个节点对象直接引用的子对象，其引用数减1
-subtract_refs
+
+标记清除的第一个关键点如何找到本代中所有对象的根对象，Python里利用了引用计数来计算根对象。原理是消除本对象链表中对象之间的引用计数，
+如果还有对象的引用计数不为0的话，说明该对象有来自于对象链表之外的引用，则认为该对象是该对象链表中所有其他对象的根对象。
+
+  .. code-block:: c
+     :linenos:
+
+     PyGC_Head *gc = containers->gc.gc_next;
+     /*环状链表，结尾为本代头*/
+     for (; gc != containers; gc = gc->gc.gc_next) {
+         /*FROM_GC获得该GC头所跟随对象地址,拷贝其引用计数到gc的引用计数字段，
+         这样不影响利用引用计数销毁对象的机制*/
+         gc->gc.gc_refs = FROM_GC(gc)->ob_refcnt;
+     }
+
+
+     for (; gc != containers; gc = gc->gc.gc_next) {
+         PyObject* parent = FROM_GC(gc);
+         for(PyObject* direct_child in parent){
+             /*减去该对象对其直接引用对象的引用计数*/
+             AS_GC(direct_child)->gc_refs --;
+         }        
+     }
+
 
 4.2 标记并移动
 ``````````````````````
+Python垃圾回收标记工作有如下几个关键点
 
-遍历young list，两件事，如果ref_count不为0表明是root对象或者可reachable对象，标示为REACHABLE,将其直接引用的对象移动到young list末尾，并设置ref_count为1
-如果ref_count为0，移动到unreachable,标示为可能UNREACHABLE，如果该对象是被root对象间接引用的会在其后的操作中重新被移动到young list中
-move_unreachable
+* **标记根对象的引用对象为可到达对象**
 
-4.3 如何进行代对象复制
-```````````````````````
+* **如果发现根节点的引用对象被错认为不可达到对象，将其重新加到可到达对象链表末尾等待标记操作**
 
-4.3 线程安全
-```````````````````
+  .. code-block:: c
+     :linenos:
+
+     PyGC_Head *unreachable;
+     PyGC_Head *containers;
+
+     /*遍历*/
+     for(PyGC_Head *gc in containers){
+        if(gc->gc.gc_refs>0){/*根节点*/
+            for(PyObject* direct_child in parent){
+                if(AS_GC(direct_child)->gc_refs = GC_TENTATIVELY_UNREACHABLE){
+                    gc_list_move(gc, containers);
+                }                
+                /*减去该对象对其直接引用对象的引用计数*/
+                AS_GC(direct_child)->gc_refs = 1;
+                
+            }        
+        }
+        else {
+            gc_list_move(gc,unreachable);
+            gc->gc.gc_refs = GC_TENTATIVELY_UNREACHABLE;
+        }
+     }
+
+     PyGC_Head* reachable = container;
+
+4.3 如何将垃圾回收后的年轻代对象拷贝到老年代中
+`````````````````````````````````````````````````
+由于采用链表，因此此项工作只用将新生代的链表头修改为老年代的最后节点即可
+
+
+4.4 对象如何获得其引用的对象
+`````````````````````````````````````````````````
+任何PyObject对象在实现时会定义其类型描述 `PyTypeObject` ，其中要实现 `tp_traverse` 方法。
+当需要对该对象的引用对象进行访问时，会采用Visit模式调用 `tp_traverse` 方法，由 `tp_traverse` 的实现来决定访问哪些引用对象。
+至于如何对引用对象进行操作（例如上面的减去引用计数），则由 `tp_traverse` 的函数指针参数 `visitproc` 来决定。一般 `tp_traverse` 
+的实现参照如下模式：
+
+
+  .. code-block:: c
+     :linenos:
+
+     typedef struct _PyExampleObject {
+        PyObject_HEAD;
+        PyObject *field1;
+        PyObject *field2;
+        PyObject *field3;
+     }PyExampleObject;
+
+     static int
+     object_traverse(PyObject *self, visitproc visit, void *arg)
+     {
+         PyExampleObject* s = (PyExampleObject *)self;
+         /*#define Py_VISIT(op) visit(op,arg)*/
+         Py_VISIT(s->field1);
+         Py_VISIT(s->field2;
+         Py_VISIT(s->field3);
+         return 0;
+     }
 
 
 
 
+4.5 线程安全（TODO）
+``````````````````````
+
+4.6 与传统垃圾回收的一些区别（TODO）
+`````````````````````````````````````
 
 
-5.参考文档
+5.参考文档 
 ------------------------
 
-1. http://www.arctrix.com/nas/python/gc/
+.. [#f1] Python垃圾回收的一些原始构思：http://www.arctrix.com/nas/python/gc/
+.. [#f2] Python对象创建和销毁的C语言API的描述: http://docs.python.org/2/c-api/allocation.html
+.. [#f3] PyTypeObject的相关C语言API的描述：http://docs.python.org/2/c-api/type.html
+.. [#f4] 引用计数相关函数：http://docs.python.org/2/c-api/refcounting.html
