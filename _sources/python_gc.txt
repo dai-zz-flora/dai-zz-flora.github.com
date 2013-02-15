@@ -1,0 +1,266 @@
+Python的垃圾回收机制
+=========================
+
+1.关键技术
+------------------------
+
+Python包含一个比较轻量级的垃圾回收器，其主要代码分布gcmodule.c(主要负责分代垃圾回收)和obmalloc.c(主要负责引用计数垃圾回收)这两个文件中。几个主要关键的技术分别是
+
+
+* **引用计数**
+
+  大多数对象的资源释放都通过引用计数来实现。当对象被引用(包括被设置为属性值、被添加到各式容器中等等)时，引用计数增长；当取消引用时，
+  引用计数减少；引用计数为0时，对象被释放。这里在python语言级别所用的引用，取消引用均由Python本身来完成；而在用C写扩展时，上述两种
+  操作由开发人员完成。
+
+
+ 
+
+
+* **标记清除**
+
+  大多数情况下，引用计数可以很好地工作，但考虑到可能存在下面这种代码，造成循环引用
+
+  .. code-block:: python
+     :linenos:
+
+     if something 
+         l = [] # l.ref_count = 1
+         l.append(l) # l.ref_count = 2
+     do something;# l.ref_count = 1
+
+         
+                  
+  因此引入标记清除的机制，标记即从根节点开始标记其直接或间接引用的子对象，清除即释放所有未被引用的对象
+ 
+
+
+* **分代垃圾回收**
+
+  分代垃圾回收是现代垃圾回收器的基本特性，主要思路是存活越久的对象，越少对其进行垃圾回收扫描，以便提高性能。而在Python中，
+  每代对象有一个数量阀值，超过该阀值则进行垃圾回收。
+
+
+* **对象链表**
+
+  在Python中，所有对象会被添加维护到对象链表中，每一代对象均由一个自己的链表来维护。
+
+
+
+2.数据结构
+------------------------
+
+* **python对象头引用计数**: 
+  
+  每个PyObject对象都会包含一个PyObject_HEAD的结构，其在Python 2.7.3版本中的定义如下
+
+ .. literalinclude:: D:/project/CDT/python/Python-2.7.3/Include/object.h
+   :language: c
+   :lines: 77-81
+   :linenos:
+
+ 其中 `Py_ssize_t ob_refcnt` 标示的被引用的次数
+
+
+
+* **可被垃圾回收对象结构** :
+  
+  当一个PyObject对象在其类型声明中指定了 `Py_TPFLAGS_HAVE_GC` 则该对象初始化时系统自动在对象内存空间之前分配一个 `PyGC_Head` 的结构
+
+  .. literalinclude:: D:\project\CDT\python\Python-2.7.3\Include\objimpl.h
+   :language: c
+   :lines: 252-259
+   :linenos:
+
+  其中 `Py_ssize_t gc_refs;` 会在之后的垃圾回收的标记中起到关键租用
+ 
+
+* **可被垃圾回收对象链表** :
+
+  从上面 `PyGC_Head` 结构中可以看出，所有的可被垃圾回收对象由 `gc_next` 和 `gc_head` 链接起来，形成一个链表
+
+* **分代** :
+
+  Python程序启动时会根据 `NUM_GENERATIONS` 分配若干代垃圾回收空间。每个空间均由一个可被回收对象链表组成。
+
+  .. literalinclude:: D:\project\CDT\python\Python-2.7.3\modules\gcmodule.c
+   :language: c
+   :lines: 30-50
+   :linenos:
+
+  在上面的代码中 `gc_generation` 为分代的数据结构，其内容包含阀值( `threshold` ）和被回收的次数 ( `count` )。随后的全局初始化代码会自动
+  生成一个不跟随对象空间的 `PyGC_Head` 结构，其prev和next（通过调用 `GEN_HEAD` 宏）都指向自己，由此之后的插入都会使得该  链表成一个环状，
+  在今后的遍历中，以该头为开始，且以该头为结束。
+
+
+
+3.流程
+------------------------
+
+
+3.1 对象创建
+```````````````````
+* **说明** : 在Python中，根据不同的情况有不同的函数来完成对象的创建工作，但大体流程均相似
+
+* **输入** ：type:对象相应 `PyTypeObject` 类信息、nitems:容器大小（如果是容器对象的话）、args:初始化参数(`PyObject *args, PyObject *kwds`)
+
+* **输出** : `PyObject` 对象指针 
+
+* **方法** ：
+
+ - 1.根据 `PyTypeObject` 信息计算所需内存空间，申请内存空间，如果有必要的话，申请GC头。
+ - 2.根据 `PyTypeObject` 调用用户定义申请空间流程，并调用。
+ - 3.初始化通用属性值，包括引用计数。
+ - 4.调用 `PyTypeObject` 自定义的 `init` 函数，传入初始化参数，进行初始化。
+ - 5.加入GC链表
+ - 6.返回结果.
+
+
+
+* **伪代码**: 伪代码根据具体实现代码进行了抽象，部分流程与实际代码对比有差别，仅供参考
+
+  .. code-block:: c
+     :linenos:
+    
+     PyObject* obj;
+     /*1.Get allocated size*/
+     int size = _PyObject_VAR_SIZE(type, nitems+1);
+     if (PyType_IS_GC(type))/*是否需要垃圾回收*/
+        obj = _PyObject_GC_Malloc(size);
+     else
+         obj = (PyObject *)PyObject_MALLOC(size);
+
+     /*2.Call custom defined new*/
+     type->tp_new(obj);
+
+     /*3.Call PyObject_Init*/
+     obj->obj_type = type;
+     obj->obj_refcnt = 1;
+    
+     /*4.call custom define init*/
+     type->tp_init(obj,args);
+
+     /*5.gc track*/
+     if (PyType_IS_GC(type))
+        _PyObject_GC_TRACK(obj);
+
+     /*6.return*/
+     return obj;
+     
+ 
+
+
+3.2 对象销毁
+``````````````````
+
+* **说明** : 在Python中，根据不同的情况有不同的函数来完成对象的销毁工作，但大体流程均相似
+
+* **输入** ：type:对象相应 `PyTypeObject` 类信息、obj:对象指针
+
+* **输出** : 无
+
+* **方法** ：
+
+ - 1.根据 `PyTypeObject` 自定义方法，清除对属性对象的引用
+ - 2.从GC链表中删除自身
+ - 3.释放各种私有属性资源
+ - 4.释放对象
+
+
+* **伪代码**: 
+
+  .. code-block:: c
+     :linenos:
+    
+     /*1.clear reference*/
+     type->tp_clear(obj);
+      
+     /*2.untrack*/ 
+     if (PyType_IS_GC(type))
+         _PyObject_GC_UNTRACK(obj);
+     
+     /*3.free private resource*/
+     free(obj->private_fields);
+
+     /*4.free*/
+     free(obj);
+
+
+3.3 根据引用计数销毁
+```````````````````````
+* **说明** :对象在引用结束时显式调用Py_DECREF,Py_CLEAR等函数，当引用数为0时，会直接释放该对象(_Py_Dealloc)
+
+* **输入** ：type:对象相应 `PyTypeObject` 类信息、obj:对象指针
+
+* **输出** : 无
+
+* **方法** ：
+   
+ - 1.引用计数减1
+ - 2.判断引用计数是否为0，为0则调用对象销毁方法
+
+
+* **伪代码**: 
+
+  .. code-block:: c
+     :linenos:
+
+     if(obj->obj_refcnt--!=0){
+        type->dealloc(obj);
+     }
+
+    
+3.4 分代垃圾回收
+```````````````````
+
+* **说明** : 如果存在循环引用等操作导致对象引用计数不为0，但是对象又不会被释放时，垃圾回收器才开始发挥作用
+
+* **输入** ：generations:所有代
+
+* **输出** : 无
+
+* **方法** ：
+
+ - 1.遍历所有代
+ - 2.判断本代对象数量是否超过阀值，如果超过则进行下列回收操作
+ - 3.合并本代所有比本代更年轻的代，
+ - 4.找到根节点
+ - 5.标记不可到达对象
+ - 6.将可到达对象加入到更老的代
+ - 7.清除不可到达对象
+   
+
+
+4 细节注释
+-----------------------
+
+
+4.1 如何找到根对象
+`````````````````````
+从对象拷贝ref count
+update_refs(young);
+访问该代的每个节点对象直接引用的子对象，其引用数减1
+subtract_refs
+
+4.2 标记并移动
+``````````````````````
+
+遍历young list，两件事，如果ref_count不为0表明是root对象或者可reachable对象，标示为REACHABLE,将其直接引用的对象移动到young list末尾，并设置ref_count为1
+如果ref_count为0，移动到unreachable,标示为可能UNREACHABLE，如果该对象是被root对象间接引用的会在其后的操作中重新被移动到young list中
+move_unreachable
+
+4.3 如何进行代对象复制
+```````````````````````
+
+4.3 线程安全
+```````````````````
+
+
+
+
+
+
+5.参考文档
+------------------------
+
+1. http://www.arctrix.com/nas/python/gc/
