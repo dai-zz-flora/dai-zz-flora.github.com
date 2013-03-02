@@ -8,7 +8,7 @@ function build_tree(root,container_selector,width,height){
         .attr("width", width)
         .attr("height", height)
         .append("g")
-        .attr("transform", "translate(40,40)");
+        .attr("transform", "translate(0,40)");
 
 
     var nodes = cluster.nodes(root),
