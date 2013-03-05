@@ -98,7 +98,7 @@ function heap2tree(array,index,highlighting){
     var real_i = index-1;
 
     var root = {
-        "node":{"index":index,"value":array[real_i],"clazz":highlighting?"h_node_circle":"node_circle"}
+        "node":{"index":index,"value":array[real_i],"clazz":index==highlighting?"h_node_circle":"node_circle"}
     }
 
     var children = [];
