@@ -47,7 +47,7 @@ function build_tree(root,container_selector,width,height){
 
     node.append("circle").attr("r", 20)
         .attr("class", function(d){
-            return d.node.high?"h_node_circle":"node_circle";
+            return d.node.clazz;
         })
      
 
@@ -56,11 +56,12 @@ function build_tree(root,container_selector,width,height){
         .style("text-anchor", "middle")
         .text(function(d) { return d.node.value; });
 
-
-    node.append("text")
-        .attr("dy", -25)
-        .style("text-anchor", "middle")
-        .text(function(d) { return d.node.index; });
+    if(root.index){
+        node.append("text")
+            .attr("dy", -25)
+            .style("text-anchor", "middle")
+            .text(function(d) { return d.node.index; });
+    }
 
 }
 
@@ -97,7 +98,7 @@ function heap2tree(array,index,highlighting){
     var real_i = index-1;
 
     var root = {
-        "node":{"index":index,"value":array[real_i],"high":index==highlighting?true:false}
+        "node":{"index":index,"value":array[real_i],"clazz":highlighting?"h_node_circle":"node_circle"}
     }
 
     var children = [];
